@@ -184,6 +184,8 @@
   .hint-note { font-size: 10px; color: var(--text-dim); margin: 8px 0 0; line-height: 1.6; }
   /* STEP18②: 保存失敗時、原因診断のため複数行のテキストをそのまま折り返し表示する */
   #saveStatus { white-space: pre-line; }
+  /* STEP20-3: 共有失敗の診断情報を複数行でそのまま表示するため */
+  #exportStatus { white-space: pre-line; }
 
   /* ---- STEP18 ③④: 設定パネル(遅延時間・カメラ切替等) ----
      旧実装: 通常のドキュメントフロー内に配置し、開くとfooterが伸びて
@@ -1577,6 +1579,21 @@
     document.querySelectorAll(".shot-export").forEach((b) => (b.disabled = disabled));
   }
 
+  // ---- STEP20-3: 共有失敗の原因特定のための診断ヘルパー ----
+  // ここでは表示を追加するだけで、共有処理・動画生成処理そのものの設計は一切変更しない。
+  function formatDiagTimestamp(ms) {
+    const d = new Date(ms);
+    const pad = (n, w) => String(n).padStart(w || 2, "0");
+    return pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds()) + "." + pad(d.getMilliseconds(), 3);
+  }
+  // navigator.userActivationは未対応ブラウザもあるため、無ければその旨を表示するだけにする
+  // (存在しないことを理由に何かを推測・修正したりはしない)。
+  function describeUserActivation() {
+    const ua = navigator.userActivation;
+    if (!ua) return "userActivation API非対応";
+    return "isActive=" + ua.isActive + " / hasBeenActive=" + ua.hasBeenActive;
+  }
+
   // frames({time,bitmap}配列)のImageBitmapを解放する。closeShotReview()等、既存コードと同じ考え方
   // (このエクスポート専用に読み込んだフレームであり、レビュー画面等とは共有していない)。
   function releaseExportFrames(frames) {
@@ -1599,6 +1616,7 @@
     isExportingVideo = true;
     setAllExportButtonsDisabled(true);
     setExportStatus("動画を作成しています…");
+    const exportStartedAt = Date.now(); // STEP20-3診断: 動画生成開始時刻
 
     // STEP20-2では既存の表示用Canvas(displayCanvas/shotReviewCanvas/comparisonCanvasA/B)を
     // 一切使わない。録画専用のexportCanvasをその場で生成し、終了後は参照を手放すだけでよい
@@ -1712,21 +1730,42 @@
 
     const blobType = recorder.mimeType || mimeType || "video/webm";
     const blob = new Blob(chunks, { type: blobType });
+    const blobReadyAt = Date.now(); // STEP20-3診断: Blob生成完了時刻
     const ext = blobType.indexOf("mp4") !== -1 ? "mp4" : "webm";
     const filename = "射_" + formatShotFilenameDate(shot.createdAt) + "." + ext;
     console.log("[STEP20-2] 動画Blob生成完了:", blob.type, blob.size, "bytes");
 
     setExportStatus("動画を作成しました。共有シートを開いています…");
-    await shareExportedVideo(blob, filename);
+    await shareExportedVideo(blob, filename, {
+      mimeType: blobType,
+      exportStartedAt: exportStartedAt,
+      blobReadyAt: blobReadyAt,
+    });
 
     isExportingVideo = false;
     setAllExportButtonsDisabled(false);
   }
 
-  /** 生成したBlobをnavigator.share()経由で共有する(STEP20-1と同じ方式)。 */
-  async function shareExportedVideo(blob, filename) {
+  /**
+   * 生成したBlobをnavigator.share()経由で共有する(STEP20-1と同じ方式。共有ロジック自体はSTEP20-3でも変更しない)。
+   * STEP20-3: 共有失敗の原因特定のため、navigator.share()直前とcatch時の状態を画面上にも表示する。
+   * @param {Object} timing { mimeType, exportStartedAt, blobReadyAt } (診断表示専用。無くても動作する)
+   */
+  async function shareExportedVideo(blob, filename, timing) {
+    timing = timing || {};
+    // 画面表示用の診断行。ここに集めるだけで、共有可否の判定ロジックには一切使わない
+    // (「diagが〜だからこうする」という分岐は今回は追加しない)。
+    const diag = [];
+    if (timing.exportStartedAt) diag.push("動画生成開始: " + formatDiagTimestamp(timing.exportStartedAt));
+    if (timing.blobReadyAt) diag.push("Blob生成完了: " + formatDiagTimestamp(timing.blobReadyAt));
+    diag.push("MediaRecorder mimeType: " + (timing.mimeType || "(不明)"));
+    diag.push("Blob: type=" + blob.type + " / size=" + blob.size + "bytes");
+
     if (!navigator.share) {
-      setExportStatus("動画は作成されましたが、共有機能が利用できません（このブラウザは共有非対応です）。");
+      diag.push("navigator.share: 非対応");
+      setExportStatus(
+        ["動画は作成されましたが、共有機能が利用できません（このブラウザは共有非対応です）。"].concat(diag).join("\n")
+      );
       return;
     }
     let file;
@@ -1734,23 +1773,46 @@
       file = new File([blob], filename, { type: blob.type });
     } catch (err) {
       console.error("[STEP20-2] File生成に失敗:", err);
-      setExportStatus("動画は作成されましたが、共有機能が利用できません。");
+      diag.push("File生成に失敗: " + (err && err.message));
+      setExportStatus(["動画は作成されましたが、共有機能が利用できません。"].concat(diag).join("\n"));
       return;
     }
-    if (navigator.canShare && !navigator.canShare({ files: [file] })) {
-      setExportStatus("動画は作成されましたが、共有機能が利用できません（この形式の共有に非対応です）。");
+    diag.push("file.type=" + file.type + " / file.size=" + file.size + "bytes");
+
+    const canShareResult = navigator.canShare ? navigator.canShare({ files: [file] }) : null;
+    diag.push(
+      "navigator.canShare({files:[file]}): " + (navigator.canShare ? String(canShareResult) : "(canShare非対応)")
+    );
+
+    if (navigator.canShare && !canShareResult) {
+      setExportStatus(
+        ["動画は作成されましたが、共有機能が利用できません（この形式の共有に非対応です）。"].concat(diag).join("\n")
+      );
       return;
     }
+
+    // navigator.share()を呼ぶ直前の状態をそのまま記録する(user activationの失効有無を含む)。
+    // ここでは記録するだけで、この値に基づいて処理を分岐させたりはしない。
+    diag.push("navigator.share()呼び出し: " + formatDiagTimestamp(Date.now()));
+    diag.push("呼び出し直前のuserActivation: " + describeUserActivation());
+
     try {
       await navigator.share({ files: [file], title: filename });
-      setExportStatus("共有シートでの操作が完了しました。写真アプリへの保存状況をご確認ください。");
+      setExportStatus(
+        ["共有シートでの操作が完了しました。写真アプリへの保存状況をご確認ください。"].concat(diag).join("\n")
+      );
     } catch (err) {
+      diag.push("catch時刻: " + formatDiagTimestamp(Date.now()));
+      diag.push("catch時点のuserActivation: " + describeUserActivation());
+      diag.push("err.name: " + (err && err.name));
+      diag.push("err.message: " + (err && err.message));
+      diag.push("err.constructor?.name: " + (err && err.constructor && err.constructor.name));
+      console.error("[STEP20-3診断] 共有に失敗:", err);
       if (err && err.name === "AbortError") {
-        // D: ユーザーによるキャンセルはエラー扱いにしない
-        setExportStatus("共有をキャンセルしました。");
+        // D: ユーザーによるキャンセルはエラー扱いにしない(診断行はキャンセル理由の記録として残す)
+        setExportStatus(["共有をキャンセルしました。"].concat(diag).join("\n"));
       } else {
-        console.error("[STEP20-2] 共有に失敗:", err);
-        setExportStatus("共有に失敗しました。");
+        setExportStatus(["共有に失敗しました。"].concat(diag).join("\n"));
       }
     }
   }
