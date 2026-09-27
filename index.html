@@ -598,6 +598,13 @@
       <!-- STEP20-2: 動画保存(1件ずつ)の処理中/結果表示。saveStatusとは別の独立した表示領域にする
            (射の保存処理自体のUIには一切触れない)。 -->
       <p id="exportStatus" class="hint-note" style="display:none"></p>
+      <!-- STEP20-4: 動画生成とnavigator.share()呼び出しを分離するための「共有する」ボタン。
+           動画生成完了後にのみ表示し、このボタンのクリックそのものを起点にnavigator.share()を
+           呼ぶ(ユーザー操作から直接呼ぶことでtransient user activationの失効を避ける)。
+           既存の「動画保存」ボタン・保存射一覧の構成は変更しない(追加のみ)。 -->
+      <div class="row" id="exportShareRow" style="display:none">
+        <button id="exportShareBtn" class="wide primary">共有する</button>
+      </div>
       <!-- STEP18(比較導線修正): 比較対象を選ぶ保存射一覧の直下(設定パネル内)に配置する。
            STEP18①でfooter側へ移したところ、STEP18③④の固定ボトムシートに隠れて
            押せなくなったため、STEP17と同じ位置へ戻した(id・JSロジックは無変更)。 -->
@@ -1543,6 +1550,15 @@
   const exportStatusEl = document.getElementById("exportStatus");
   let isExportingVideo = false; // 同時に複数のエクスポートを走らせない(Canvas/Recorderを1系統に限定するため)
 
+  // ---- STEP20-4: 動画生成と共有開始の分離 ----
+  // 動画生成完了後、navigator.share()を自動実行せず、生成済みFile/Blobを保持したまま
+  // 「共有する」ボタンの表示のみ行う。実際のnavigator.share()呼び出しは、このボタンの
+  // クリックイベントを直接の起点として行う(non-userGesture文脈からの自動呼び出しを避ける)。
+  const exportShareRow = document.getElementById("exportShareRow");
+  const exportShareBtn = document.getElementById("exportShareBtn");
+  let pendingExportFile = null; // 共有待ちのFile(共有ボタンが押されるまで保持し、再生成しない)
+  let pendingExportTiming = null; // 診断表示用({mimeType, exportStartedAt, blobReadyAt})
+
   // STEP20-1のverify_video_export.htmlと同じ優先順位。MP4系を優先し、非対応ならWebMへ自動フォールバックする。
   const EXPORT_MIME_CANDIDATES = [
     'video/mp4;codecs="avc1.42E01E,mp4a.40.2"',
@@ -1615,6 +1631,10 @@
 
     isExportingVideo = true;
     setAllExportButtonsDisabled(true);
+    // STEP20-4: 新しい動画生成を始めるので、前回分の共有待ち状態(あれば)は破棄する
+    pendingExportFile = null;
+    pendingExportTiming = null;
+    exportShareRow.style.display = "none";
     setExportStatus("動画を作成しています…");
     const exportStartedAt = Date.now(); // STEP20-3診断: 動画生成開始時刻
 
@@ -1735,11 +1755,13 @@
     const filename = "射_" + formatShotFilenameDate(shot.createdAt) + "." + ext;
     console.log("[STEP20-2] 動画Blob生成完了:", blob.type, blob.size, "bytes");
 
-    setExportStatus("動画を作成しました。共有シートを開いています…");
-    await shareExportedVideo(blob, filename, {
+    // STEP20-4: ここではnavigator.share()を呼ばない。生成済みBlob/Fileを保持し、
+    // 「共有する」ボタンを表示するだけにとどめる(共有の起点はユーザーのボタン操作にする)。
+    prepareExportedVideoForShare(blob, filename, {
       mimeType: blobType,
       exportStartedAt: exportStartedAt,
       blobReadyAt: blobReadyAt,
+      durationSec: durationMs / 1000,
     });
 
     isExportingVideo = false;
@@ -1747,37 +1769,63 @@
   }
 
   /**
-   * 生成したBlobをnavigator.share()経由で共有する(STEP20-1と同じ方式。共有ロジック自体はSTEP20-3でも変更しない)。
-   * STEP20-3: 共有失敗の原因特定のため、navigator.share()直前とcatch時の状態を画面上にも表示する。
-   * @param {Object} timing { mimeType, exportStartedAt, blobReadyAt } (診断表示専用。無くても動作する)
+   * STEP20-4: 生成したBlobをFile化し、共有する前段階として保持するだけの関数。
+   * navigator.share()はここでは呼ばない(自動実行の禁止)。「動画が完成しました」の
+   * サマリ表示と「共有する」ボタンの表示のみ行う。
+   * @param {Object} timing { mimeType, exportStartedAt, blobReadyAt, durationSec }
    */
-  async function shareExportedVideo(blob, filename, timing) {
+  function prepareExportedVideoForShare(blob, filename, timing) {
     timing = timing || {};
-    // 画面表示用の診断行。ここに集めるだけで、共有可否の判定ロジックには一切使わない
-    // (「diagが〜だからこうする」という分岐は今回は追加しない)。
-    const diag = [];
-    if (timing.exportStartedAt) diag.push("動画生成開始: " + formatDiagTimestamp(timing.exportStartedAt));
-    if (timing.blobReadyAt) diag.push("Blob生成完了: " + formatDiagTimestamp(timing.blobReadyAt));
-    diag.push("MediaRecorder mimeType: " + (timing.mimeType || "(不明)"));
-    diag.push("Blob: type=" + blob.type + " / size=" + blob.size + "bytes");
-
-    if (!navigator.share) {
-      diag.push("navigator.share: 非対応");
-      setExportStatus(
-        ["動画は作成されましたが、共有機能が利用できません（このブラウザは共有非対応です）。"].concat(diag).join("\n")
-      );
-      return;
-    }
     let file;
     try {
       file = new File([blob], filename, { type: blob.type });
     } catch (err) {
-      console.error("[STEP20-2] File生成に失敗:", err);
-      diag.push("File生成に失敗: " + (err && err.message));
-      setExportStatus(["動画は作成されましたが、共有機能が利用できません。"].concat(diag).join("\n"));
+      console.error("[STEP20-4] File生成に失敗:", err);
+      pendingExportFile = null;
+      pendingExportTiming = null;
+      exportShareRow.style.display = "none";
+      setExportStatus("動画は作成されましたが、共有の準備に失敗しました（" + (err && err.message) + "）。");
       return;
     }
+
+    pendingExportFile = file;
+    pendingExportTiming = timing;
+
+    const ext = blob.type.indexOf("mp4") !== -1 ? "MP4" : blob.type.indexOf("webm") !== -1 ? "WebM" : "(形式不明)";
+    const sizeMb = (file.size / 1048576).toFixed(1);
+    const durationLabel = timing.durationSec != null ? timing.durationSec.toFixed(1) + "秒 / " : "";
+    setExportStatus(
+      "動画が完成しました\n" + durationLabel + ext + " / 約" + sizeMb + "MB\n「共有する」を押してください。"
+    );
+    exportShareRow.style.display = "flex";
+  }
+
+  /**
+   * STEP20-4: 「共有する」ボタンのクリックを直接の起点としてnavigator.share()を呼ぶ。
+   * 動画の再生成は行わず、prepareExportedVideoForShare()で保持したFileをそのまま使う。
+   * 共有ロジック自体(files+titleでの単純な呼び出し、診断表示の内容)はSTEP20-3から変更しない。
+   */
+  async function shareExportedVideo(file, timing) {
+    if (!file) return;
+    timing = timing || {};
+    exportShareBtn.disabled = true; // 共有中の二重クリックを防ぐ(押せなくなるだけでボタン自体は消さない)
+
+    // 画面表示用の診断行。ここに集めるだけで、共有可否の判定ロジックには一切使わない
+    // (「diagが〜だからこうする」という分岐は今回も追加しない)。
+    const diag = [];
+    if (timing.exportStartedAt) diag.push("動画生成開始: " + formatDiagTimestamp(timing.exportStartedAt));
+    if (timing.blobReadyAt) diag.push("Blob生成完了: " + formatDiagTimestamp(timing.blobReadyAt));
+    diag.push("MediaRecorder mimeType: " + (timing.mimeType || "(不明)"));
     diag.push("file.type=" + file.type + " / file.size=" + file.size + "bytes");
+
+    if (!navigator.share) {
+      diag.push("navigator.share: 非対応");
+      setExportStatus(
+        ["共有機能が利用できません（このブラウザは共有非対応です）。"].concat(diag).join("\n")
+      );
+      exportShareBtn.disabled = false;
+      return;
+    }
 
     const canShareResult = navigator.canShare ? navigator.canShare({ files: [file] }) : null;
     diag.push(
@@ -1786,8 +1834,9 @@
 
     if (navigator.canShare && !canShareResult) {
       setExportStatus(
-        ["動画は作成されましたが、共有機能が利用できません（この形式の共有に非対応です）。"].concat(diag).join("\n")
+        ["共有機能が利用できません（この形式の共有に非対応です）。"].concat(diag).join("\n")
       );
+      exportShareBtn.disabled = false;
       return;
     }
 
@@ -1797,7 +1846,7 @@
     diag.push("呼び出し直前のuserActivation: " + describeUserActivation());
 
     try {
-      await navigator.share({ files: [file], title: filename });
+      await navigator.share({ files: [file], title: file.name });
       setExportStatus(
         ["共有シートでの操作が完了しました。写真アプリへの保存状況をご確認ください。"].concat(diag).join("\n")
       );
@@ -1807,7 +1856,7 @@
       diag.push("err.name: " + (err && err.name));
       diag.push("err.message: " + (err && err.message));
       diag.push("err.constructor?.name: " + (err && err.constructor && err.constructor.name));
-      console.error("[STEP20-3診断] 共有に失敗:", err);
+      console.error("[STEP20-4診断] 共有に失敗:", err);
       if (err && err.name === "AbortError") {
         // D: ユーザーによるキャンセルはエラー扱いにしない(診断行はキャンセル理由の記録として残す)
         setExportStatus(["共有をキャンセルしました。"].concat(diag).join("\n"));
@@ -1815,7 +1864,14 @@
         setExportStatus(["共有に失敗しました。"].concat(diag).join("\n"));
       }
     }
+    exportShareBtn.disabled = false;
   }
+
+  // 「共有する」ボタンのクリックそのものがnavigator.share()呼び出しの起点になる
+  // (非同期処理を挟まず、クリックハンドラから直接shareExportedVideo()を呼ぶ)。
+  exportShareBtn.addEventListener("click", () => {
+    shareExportedVideo(pendingExportFile, pendingExportTiming);
+  });
 
   // ---- 保存済み射の再生 ----
   // 新しい「保存動画専用再生エンジン」は作らず、PlaybackEngineの別インスタンスと
