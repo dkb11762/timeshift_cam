@@ -41,14 +41,14 @@ const step20Src = sectionStart >= 0 && sectionEnd > sectionStart ? html.slice(se
 
 console.log("\n[STEP20-4] 動画生成完了処理からnavigator.share()を直接呼んでいないこと");
 
-check("exportShotAsVideo()内にnavigator.share()の実際の呼び出しが存在しない(生成完了処理からの直接呼び出し禁止。コメントでの言及は許容)", () => {
-  const fnMatch = step20Src.match(/async function exportShotAsVideo\([\s\S]*?\n  \}/);
-  assert.ok(fnMatch, "exportShotAsVideo()が見つからない");
-  assert.ok(!/navigator\.share\(\{/.test(fnMatch[0]), "exportShotAsVideo()がnavigator.share()を直接呼んでいる");
+check("runExportShotAsVideo()(生成処理本体)内にnavigator.share()の実際の呼び出しが存在しない(生成完了処理からの直接呼び出し禁止。コメントでの言及は許容)", () => {
+  const fnMatch = step20Src.match(/async function runExportShotAsVideo\([\s\S]*?\n  \}/);
+  assert.ok(fnMatch, "runExportShotAsVideo()が見つからない");
+  assert.ok(!/navigator\.share\(\{/.test(fnMatch[0]), "runExportShotAsVideo()がnavigator.share()を直接呼んでいる");
 });
 
 check("Blob生成完了後はprepareExportedVideoForShare()を呼ぶだけで、awaitで共有完了を待っていない", () => {
-  const fnMatch = step20Src.match(/async function exportShotAsVideo\([\s\S]*?\n  \}/);
+  const fnMatch = step20Src.match(/async function runExportShotAsVideo\([\s\S]*?\n  \}/);
   const body = fnMatch[0];
   assert.ok(body.includes("prepareExportedVideoForShare(blob, filename,"), "prepareExportedVideoForShare()の呼び出しが見つからない");
   assert.ok(!/await\s+shareExportedVideo/.test(body), "生成完了処理がshareExportedVideo()の完了を待っている(自動共有の名残)");
@@ -102,7 +102,7 @@ check("pendingExportFile/pendingExportTimingが動画生成完了後に保持さ
 });
 
 check("新しい動画生成の開始時に、前回の共有待ち状態をリセットしている(古いFileを誤って共有しない)", () => {
-  const fnMatch = step20Src.match(/async function exportShotAsVideo\([\s\S]*?\n  \}/);
+  const fnMatch = step20Src.match(/async function runExportShotAsVideo\([\s\S]*?\n  \}/);
   const body = fnMatch[0];
   const resetIdx = body.indexOf("pendingExportFile = null;");
   const isExportingIdx = body.indexOf("isExportingVideo = true;");

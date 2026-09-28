@@ -317,6 +317,8 @@
   /* STEP20-2: 動画保存ボタン。既存の再生/削除ボタンと同じ見た目のトーンに揃える(大幅なUI変更をしない)。 */
   .shot-export { color: var(--ok); border-color: var(--ok); }
   .shot-export:disabled { opacity: 0.4; }
+  /* STEP20-5: 動画作成中のボタン自身は、無効化中でも薄くせず経過表示を読めるようにする */
+  .shot-export.exporting:disabled { opacity: 1; }
   .shot-compare-check { width: 18px; height: 18px; accent-color: var(--accent); }
   .shot-compare-slot {
     display: inline-block; min-width: 14px;
@@ -1502,7 +1504,7 @@
         const exportBtn = document.createElement("button");
         exportBtn.textContent = "動画保存";
         exportBtn.className = "shot-export";
-        exportBtn.addEventListener("click", () => exportShotAsVideo(shot));
+        exportBtn.addEventListener("click", () => exportShotAsVideo(shot, exportBtn));
         const delBtn = document.createElement("button");
         delBtn.textContent = "削除";
         delBtn.className = "shot-delete";
@@ -1618,11 +1620,58 @@
     }
   }
 
+  // ---- STEP20-5: 動画作成中の待機表示(UI改善のみ。動画生成・共有ロジックには触れない) ----
+  // 押した「動画保存」ボタン自身を「作成中… N秒」に変え、生成完了(または失敗)で元に戻す。
+  // MediaRecorderの実際の進捗は取得していないため、「N/M秒」のような進捗率ではなく
+  // 単なる経過時間であることが分かる表現にしている。
+  function startExportButtonProgress(btn) {
+    if (!btn) return { stop: function () {} };
+    const originalText = btn.textContent;
+    const startedAt = Date.now();
+    const render = () => {
+      btn.textContent = "作成中… " + Math.floor((Date.now() - startedAt) / 1000) + "秒";
+    };
+    btn.classList.add("exporting");
+    render();
+    const timerId = setInterval(render, 250);
+    return {
+      stop: function () {
+        clearInterval(timerId);
+        btn.classList.remove("exporting");
+        btn.textContent = originalText;
+      },
+    };
+  }
+  // 状態表示/共有ボタンが設定パネル内で画面外にある場合に、最小限のスクロールで見える位置へ寄せる。
+  // (block:"nearest"なので、すでに見えていれば動かない。失敗しても動画生成には影響させない)
+  function scrollExportUiIntoView(el) {
+    try {
+      el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    } catch (e) {
+      try { el.scrollIntoView(false); } catch (e2) {}
+    }
+  }
+
   /**
-   * 保存済み射1件を動画化し、共有シート経由で写真アプリへ保存する。
+   * 保存済み射1件を動画化する(STEP20-5: 待機表示のラッパー。生成処理本体はrunExportShotAsVideo)。
+   * @param {Object} shot StorageEngine.listShots()が返すメタデータ
+   * @param {HTMLButtonElement} triggerBtn 押された「動画保存」ボタン(作成中表示の対象)
+   */
+  async function exportShotAsVideo(shot, triggerBtn) {
+    if (isExportingVideo) return;
+    const progress = startExportButtonProgress(triggerBtn);
+    try {
+      await runExportShotAsVideo(shot);
+    } finally {
+      progress.stop(); // 成功・失敗・早期returnのいずれでも必ず元のボタン表示に戻す
+    }
+  }
+
+  /**
+   * 保存済み射1件を動画化し、完成後に「共有する」ボタンを表示する(STEP20-4の構造のまま)。
    * @param {Object} shot StorageEngine.listShots()が返すメタデータ({id, createdAt, durationMs, ...})
    */
-  async function exportShotAsVideo(shot) {
+  async function runExportShotAsVideo(shot) {
     if (isExportingVideo) return; // 二重起動防止(Canvas/Recorderを1系統に限定)
     if (!window.MediaRecorder || typeof HTMLCanvasElement.prototype.captureStream !== "function") {
       setExportStatus("動画の作成を開始できませんでした（このブラウザは動画書き出しに対応していません）。");
@@ -1636,6 +1685,7 @@
     pendingExportTiming = null;
     exportShareRow.style.display = "none";
     setExportStatus("動画を作成しています…");
+    scrollExportUiIntoView(exportStatusEl); // STEP20-5: 状態表示が画面外なら見える位置へ
     const exportStartedAt = Date.now(); // STEP20-3診断: 動画生成開始時刻
 
     // STEP20-2では既存の表示用Canvas(displayCanvas/shotReviewCanvas/comparisonCanvasA/B)を
@@ -1798,6 +1848,7 @@
       "動画が完成しました\n" + durationLabel + ext + " / 約" + sizeMb + "MB\n「共有する」を押してください。"
     );
     exportShareRow.style.display = "flex";
+    scrollExportUiIntoView(exportShareRow); // STEP20-5: 完成表示と「共有する」ボタンが見える位置へ
   }
 
   /**
