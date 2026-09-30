@@ -579,7 +579,7 @@
       <div class="label" style="margin-top:14px">スロー速度</div>
       <div class="row" id="slowRatePresets"></div>
 
-      <div class="label" style="margin-top:10px">スロー範囲</div>
+      <div class="label" style="margin-top:10px">スロー確認範囲</div>
       <div class="row" id="slowWindowPresets"></div>
 
       <div class="label" style="margin-top:14px">コマ送り（詳細確認）</div>
@@ -589,7 +589,10 @@
       </div>
 
       <div class="label" style="margin-top:14px">射の保存</div>
+      <!-- STEP21-B: 「スロー確認範囲」とは別項目。現在の再生位置から過去へさかのぼって保存する長さ。 -->
+      <div class="label">保存する範囲（現在の再生位置から過去へさかのぼって保存）</div>
       <div class="row" id="saveRangePresets"></div>
+      <p id="saveAvailableInfo" class="hint-note"></p>
       <div class="row">
         <button id="saveShotBtn" class="wide primary">この射を保存</button>
       </div>
@@ -745,13 +748,83 @@
   const SLOW_RATE_OPTIONS = [1 / 2, 1 / 3, 1 / 4];
   const MAX_SLOW_WINDOW_SEC = 10; // スロー範囲として選択できる最大値(バッファ保持時間の計算に使う)
   const SEEK_STEP_SEC = 5;
-  // 射の保存範囲の選択肢は、スロー範囲(SLOW_WINDOW_OPTIONS)と同じ数値セットを共用する
-  const SAVE_RANGE_OPTIONS = SLOW_WINDOW_OPTIONS;
-  const DEFAULT_SAVE_RANGE_SEC = 10;
+  // STEP21-B: 射の保存範囲(SAVE_RANGE_OPTIONS)は、スロー確認範囲(SLOW_WINDOW_OPTIONS)とは
+  // 意味が違うため、別の配列として完全に分離する(以前は同じ配列を参照で共有していた)。
+  // ※実際の定義は、下のSTEP21-Bブロック(BEGIN/END)内にまとめている。
   const JPEG_QUALITY = StorageEngine.DEFAULT_JPEG_QUALITY; // 0.8。将来変更する場合はstorageEngine.js側の定数を調整する
   // バッファ保持時間：最大遅延(30秒) + 「最大遅延位置からさらに最大10秒のスロー確認をする」ケースに
   // 対応できるだけの余裕を持たせる
-  const BUFFER_RETENTION_SEC = MAX_DELAY_SEC + MAX_SLOW_WINDOW_SEC + 5;
+  const BUFFER_RETENTION_SEC = MAX_DELAY_SEC + MAX_SLOW_WINDOW_SEC + 5; // 保持時間の「下限(基準値)」。実際の間引きにはgetBufferRetentionSec()を使う(STEP21-B)
+
+  // ---- STEP21-B: 保存範囲10/30/60秒・バッファ保持R2方式・保存中フレーム保護(純粋ロジック) ----
+  // このブロックはDOM/カメラに依存しない。Nodeテスト(test_step21b.js)がBEGIN/ENDの間を
+  // そのまま取り出して検証する(実装とテストのロジックが乖離しないようにするため)。
+  // STEP21-BEGIN
+  const SAVE_RANGE_OPTIONS = [10, 30, 60]; // スロー確認範囲(SLOW_WINDOW_OPTIONS=[3,5,10])とは別配列
+  const DEFAULT_SAVE_RANGE_SEC = 60;
+  const MAX_SAVE_RANGE_SEC = 60;
+  // バッファ保持時間の上限。STEP21-Bの実機検証(75秒テスト)で、80秒(約1,600フレーム)の保持を
+  // fps20.0・createImageBitmap失敗0・Safari異常終了なしで確認済みの値を上限とする。
+  const MAX_BUFFER_RETENTION_SEC = 80;
+  // 実際の保存時間が選択値より1.5秒以上短い場合に、要求値と実際の値を併記して表示する
+  const SAVE_SHORTFALL_NOTICE_SEC = 1.5;
+
+  // 保存範囲として保存されていた値の検証。選択肢に無い値(旧仕様の3/5秒等)は初期値へ移行する。
+  // 選択肢にある値(10秒を含む)は、ユーザーが明示的に選んだ値なのでそのまま維持する。
+  function sanitizeSaveRangeSec(value) {
+    return SAVE_RANGE_OPTIONS.indexOf(value) !== -1 ? value : DEFAULT_SAVE_RANGE_SEC;
+  }
+
+  // R2方式: max(45, 遅延秒数 + 保存範囲 + 5)。ただしMAX_BUFFER_RETENTION_SECを超えない。
+  function computeBufferRetentionSec(delaySec, saveRangeSecValue) {
+    const wanted = delaySec + saveRangeSecValue + 5;
+    return Math.min(MAX_BUFFER_RETENTION_SEC, Math.max(BUFFER_RETENTION_SEC, wanted));
+  }
+
+  // 「今保存できる長さ」(秒)。playbackTimeから過去へ、バッファ最古フレームまでの範囲を
+  // 選択中の保存範囲で頭打ちにしたもの。フレームには触れず、時刻の算術だけで求める。
+  function computeSaveAvailableSec(playbackTime, oldestTime, saveRangeSecValue) {
+    if (playbackTime == null || oldestTime == null) return 0;
+    return Math.max(0, Math.min(saveRangeSecValue, (playbackTime - oldestTime) / 1000));
+  }
+
+  // 保存中のフレーム保護。保存対象のフレーム(selectedFrames、saveShotと同じ切り出し)が、
+  // 保存が終わる前に、ライブのバッファ間引き(captureFrame)でclose()されないようにする。
+  //   ・tryDefer(frame): 保護対象で、まだ書き込み済みでなければtrue(=呼び出し側はcloseしない)。
+  //   ・markDone(n)    : 先頭n枚が書き込み済みになったので、退避中のうち不要になったものを返す。
+  //   ・finish()       : 保存終了。退避中の残り全部を返す(呼び出し側がcloseする)。
+  function createFrameProtector(selectedFrames) {
+    const indexByFrame = new Map();
+    selectedFrames.forEach((f, i) => indexByFrame.set(f, i));
+    let done = 0;
+    let deferred = [];
+    return {
+      tryDefer(frame) {
+        const idx = indexByFrame.get(frame);
+        if (idx === undefined || idx < done) return false;
+        deferred.push(frame);
+        return true;
+      },
+      markDone(n) {
+        if (n > done) done = n;
+        const toClose = [];
+        const keep = [];
+        deferred.forEach((f) => (indexByFrame.get(f) < done ? toClose : keep).push(f));
+        deferred = keep;
+        return toClose;
+      },
+      finish() {
+        const rest = deferred;
+        deferred = [];
+        indexByFrame.clear();
+        return rest;
+      },
+      deferredCount() {
+        return deferred.length;
+      },
+    };
+  }
+  // STEP21-END
 
   // ---- 状態 ----
   let delaySeconds = Number(localStorage.getItem("delaySeconds")) || DEFAULT_DELAY;
@@ -759,7 +832,13 @@
   let facingMode = localStorage.getItem("facingMode") || "environment";
   let slowWindowSec = Number(localStorage.getItem("slowWindowSec")) || DEFAULT_SLOW_WINDOW_SEC;
   let slowRate = Number(localStorage.getItem("slowRate")) || DEFAULT_SLOW_RATE;
-  let saveRangeSec = Number(localStorage.getItem("saveRangeSec")) || DEFAULT_SAVE_RANGE_SEC;
+  // STEP21-B: 保存範囲。キーが無ければ新しい初期値(60秒)。選択肢にある値(10秒を含む)は維持。
+  // 旧仕様の3/5秒が保存されている場合は初期値(60秒)へ移行し、保存し直す。
+  // スロー確認範囲("slowWindowSec")とは別キーのまま(同じキーで保存しない)。
+  let saveRangeSec = sanitizeSaveRangeSec(Number(localStorage.getItem("saveRangeSec")));
+  if (localStorage.getItem("saveRangeSec") !== null && String(saveRangeSec) !== localStorage.getItem("saveRangeSec")) {
+    localStorage.setItem("saveRangeSec", String(saveRangeSec));
+  }
   let activeSlowRateLabel = rateFractionLabel(slowRate); // スロー再生中の表示用(直近に開始した速度)
   let stream = null;
   let running = false;
@@ -814,6 +893,7 @@
   const saveRangePresetsRow = document.getElementById("saveRangePresets");
   const saveShotBtn = document.getElementById("saveShotBtn");
   const saveStatus = document.getElementById("saveStatus");
+  const saveAvailableInfo = document.getElementById("saveAvailableInfo");
   const shotListEl = document.getElementById("shotList");
   const shotReviewOverlay = document.getElementById("shotReviewOverlay");
   const shotReviewStage = document.getElementById("shotReviewStage");
@@ -1322,7 +1402,7 @@
   stepBackBtn.addEventListener("click", () => stepFrame(-1));
   stepForwardBtn.addEventListener("click", () => stepFrame(1));
 
-  // ---- 射の保存範囲の選択(スロー範囲と同じ選択肢を共有) ----
+  // ---- 射の保存範囲の選択(STEP21-B: スロー確認範囲とは別の選択肢[10,30,60]) ----
   function renderSaveRangePresets() {
     saveRangePresetsRow.innerHTML = "";
     SAVE_RANGE_OPTIONS.forEach((sec) => {
@@ -1333,6 +1413,7 @@
         saveRangeSec = sec;
         localStorage.setItem("saveRangeSec", String(sec));
         renderSaveRangePresets();
+        updateSaveAvailableInfo(true);
       });
       saveRangePresetsRow.appendChild(b);
     });
@@ -1342,6 +1423,45 @@
   // Storage Engineへ委譲するだけ。frameBufferの配列そのものを渡すが、
   // Storage Engine側はそれを読み取るだけで、Buffer Engineの内部管理には触れない。
   let isSaving = false;
+  // STEP21-B: 保存中に届いた回転(applyOrientation)は、保存が終わるまで保留し、終了後に反映する。
+  // (applyOrientationはバッファ全体をclearBuffer()で破棄するため、保存中に走らせない)
+  let orientationDeferredBySave = false;
+  // STEP21-B: 保存中のフレーム保護(保存対象のImageBitmapが保存完了前にclose()されるのを防ぐ)
+  let saveProtector = null;
+
+  // captureFrame()の間引きから呼ぶ。保存中の保護対象なら、close()せず退避する。
+  function releaseBufferFrame(frame) {
+    if (saveProtector && saveProtector.tryDefer(frame)) return;
+    try { frame.bitmap.close(); } catch (e) {}
+  }
+  function closeFrameList(frames) {
+    for (const f of frames) {
+      try { f.bitmap.close(); } catch (e) {}
+    }
+  }
+
+  // STEP21-B: 「今保存できる長さ」の表示。設定パネルが開いている間だけ、間引いて更新する。
+  let lastSaveAvailableUpdate = 0;
+  function updateSaveAvailableInfo(force, now) {
+    if (!force) {
+      if (!secondaryControls.classList.contains("open")) return;
+      if (now - lastSaveAvailableUpdate < 500) return;
+    }
+    lastSaveAvailableUpdate = now || performance.now();
+    const oldest = frameBuffer.length ? frameBuffer[0].time : null;
+    const avail = computeSaveAvailableSec(playback.playbackTime, oldest, saveRangeSec);
+    let text = "今保存できる長さ: 約" + avail.toFixed(1) + "秒（選択: " + saveRangeSec + "秒）";
+    if (avail < saveRangeSec - SAVE_SHORTFALL_NOTICE_SEC) {
+      // 遅延設定が長く、保持時間の上限を超えて溜められない場合は、その旨を明示する
+      const maxPossible = Math.min(saveRangeSec, getBufferRetentionSec() - delaySeconds);
+      if (maxPossible < saveRangeSec - SAVE_SHORTFALL_NOTICE_SEC) {
+        text += "\n遅延設定が長いため、最大で約" + Math.max(0, Math.floor(maxPossible)) + "秒までしか保存できません（遅延を短くすると長く保存できます）。";
+      } else {
+        text += "\n映像がまだ溜まっていません。時間が経つと選択した長さまで保存できます。";
+      }
+    }
+    saveAvailableInfo.textContent = text;
+  }
 
   // STEP18②: 「保存射を複数保存できない」問題の原因を実機で特定するための診断のみ。
   // 原因(容量不足なのか、他の要因なのか)を決め打ちせず、実際に何が起きたかを
@@ -1364,6 +1484,7 @@
     if (isSaving) return;
     isSaving = true;
     saveShotBtn.disabled = true;
+    flipBtn.disabled = true; // STEP21-B: 保存中はカメラ切替(バッファ全破棄を伴う)を無効化する
     saveStatus.style.display = "block";
     saveStatus.textContent = "保存中…";
 
@@ -1378,18 +1499,40 @@
 
     let failed = false;
     try {
-      const meta = await StorageEngine.saveShot(frameBuffer, {
+      // STEP21-B: 保存中に設定を切り替えても、この保存の要求値は変わらないよう、ここで固定する。
+      const requestedSec = saveRangeSec;
+      const saveOpts = {
         playbackTime: playback.playbackTime,
-        windowSec: saveRangeSec,
+        windowSec: requestedSec,
         oldestAvailableTime: frameBuffer.length ? frameBuffer[0].time : null,
         delaySecondsAtCapture: delaySeconds,
         jpegQuality: JPEG_QUALITY,
         onProgress: (done, total) => {
           saveStatus.textContent = "保存中 " + done + " / " + total;
+          // STEP21-B: 書き込み済みになったフレームのうち、すでにバッファから外れて退避中のものを解放する
+          if (saveProtector) closeFrameList(saveProtector.markDone(done));
         },
-      });
+      };
+      // STEP21-B: saveShot()と同じ入力・同じ関数(どちらもStorageEngineの公開API)で保存対象を切り出し、
+      // 保護対象として登録する。saveShot()は呼び出し直後の同期部分で同じ切り出しを行うため、
+      // ここからsaveShot()の呼び出しまでの間に非同期処理(await)を挟まないこと(結果を一致させるため)。
+      const protectRange = StorageEngine.computeSaveRange(
+        saveOpts.playbackTime, saveOpts.windowSec, saveOpts.oldestAvailableTime
+      );
+      saveProtector = createFrameProtector(
+        StorageEngine.selectFramesInRange(frameBuffer, protectRange.startTime, protectRange.endTime)
+      );
+      const meta = await StorageEngine.saveShot(frameBuffer, saveOpts);
       if (meta) {
-        saveStatus.textContent = "保存しました（" + (meta.durationMs / 1000).toFixed(1) + "秒）";
+        const actualSec = meta.durationMs / 1000;
+        if (requestedSec - actualSec >= SAVE_SHORTFALL_NOTICE_SEC) {
+          // 黙って短い動画を保存しない: 要求した長さと実際に保存された長さを併記する
+          saveStatus.textContent =
+            "保存しました\n要求 " + requestedSec + "秒 → 実際 " + actualSec.toFixed(1) +
+            "秒（バッファに存在する範囲のみ保存されました）";
+        } else {
+          saveStatus.textContent = "保存しました（" + actualSec.toFixed(1) + "秒）";
+        }
         await refreshShotList();
       } else {
         saveStatus.textContent = "保存できるフレームがありませんでした。";
@@ -1408,8 +1551,20 @@
         "試行後 " + estimateAfter,
       ].join("\n");
     } finally {
+      // STEP21-B: 保護の後始末(成功・失敗どちらでも、退避中のフレームは必ず解放する)
+      if (saveProtector) {
+        closeFrameList(saveProtector.finish());
+        saveProtector = null;
+      }
       isSaving = false;
       saveShotBtn.disabled = false;
+      flipBtn.disabled = false;
+      // 保存中に保留していた回転を、保存完了後にここで反映する
+      if (orientationDeferredBySave) {
+        orientationDeferredBySave = false;
+        applyOrientation();
+      }
+      updateSaveAvailableInfo(true);
       // STEP18②: 失敗時は実機でメモを取る時間が必要なため、成功時より長く表示したままにする。
       setTimeout(() => {
         saveStatus.style.display = "none";
@@ -2836,6 +2991,7 @@
   shotSlowCheckBtn.addEventListener("click", reviewSlowCheck);
 
   flipBtn.addEventListener("click", async () => {
+    if (isSaving) return; // STEP21-B: 保存中はカメラ切替をしない(念のためのガード。ボタン自体もdisabled)
     facingMode = facingMode === "environment" ? "user" : "environment";
     localStorage.setItem("facingMode", facingMode);
     await startCamera();
@@ -2976,6 +3132,11 @@
   }
 
   function applyOrientation() {
+    // STEP21-B: 保存中は、バッファを全破棄する回転処理を保留する(保存完了後に反映する)
+    if (isSaving) {
+      orientationDeferredBySave = true;
+      return;
+    }
     if (!stream) return;
     const track = stream.getVideoTracks()[0];
     if (!track) return;
@@ -3063,6 +3224,9 @@
   const insertSorted = (frame) => BufferEngine.insertSorted(frameBuffer, frame);
 
   // ---- フレーム取り込み ----
+  function getBufferRetentionSec() {
+    return computeBufferRetentionSec(delaySeconds, saveRangeSec);
+  }
   function captureFrame(now) {
     if (now - lastCaptureTime < CAPTURE_INTERVAL_MS) return;
     if (sourceVideo.readyState < 2) return;
@@ -3090,10 +3254,12 @@
         }
 
         // 古いフレームの破棄（設定した保持時間を超えたら破棄）
-        const cutoff = now - BUFFER_RETENTION_SEC * 1000;
+        // STEP21-B: 保持時間は遅延秒数・保存範囲に応じて変わる(R2方式)。保存中の保護対象は
+        // releaseBufferFrame()がclose()せず退避する。
+        const cutoff = now - getBufferRetentionSec() * 1000;
         while (frameBuffer.length && frameBuffer[0].time < cutoff) {
           const old = frameBuffer.shift();
-          old.bitmap.close();
+          releaseBufferFrame(old);
         }
       })
       .catch(() => {
@@ -3213,6 +3379,7 @@
       renderFrame(now);
     }
     updateDebugPanel(now);
+    updateSaveAvailableInfo(false, now); // STEP21-B: 設定パネルが開いている間だけ0.5秒間隔で更新
     requestAnimationFrame(loop);
   }
 
@@ -3222,6 +3389,7 @@
   renderSlowRatePresets();
   renderSlowWindowPresets();
   renderSaveRangePresets();
+  updateSaveAvailableInfo(true);
   refreshShotList();
   startCamera();
   requestAnimationFrame(loop);
