@@ -848,6 +848,19 @@
     return "保存中… " + done + " / " + total + "コマ";
   }
   const SAVE_DONE_LIST_NOTE = "保存射一覧に追加されました";
+  // 「再生位置を過去に戻している」状態の判定(「今保存できる長さ」の理由説明の切り替え用)。
+  // rewoundSec = 実測の遅れ秒数 − 設定遅延秒数。通常の遅延再生中は約0。
+  // 境界付近で文言が頻繁に切り替わらないよう、入る閾値(3秒)と戻る閾値(1.5秒)に差をつける(ヒステリシス)。
+  const REWOUND_ENTER_SEC = 3;
+  const REWOUND_EXIT_SEC = 1.5;
+  function nextRewoundState(prevRewound, rewoundSec) {
+    if (rewoundSec == null) return false;
+    return prevRewound ? rewoundSec > REWOUND_EXIT_SEC : rewoundSec > REWOUND_ENTER_SEC;
+  }
+  function formatSaveRewoundNote(availSec) {
+    return "再生位置を過去に戻しているため、今は約" + Math.max(0, Math.floor(availSec)) +
+      "秒までしか保存できません。「最新へ戻る」を押すと、より長く保存できます。";
+  }
   // STEP23-END
 
   // ---- 状態 ----
@@ -1472,6 +1485,7 @@
 
   // STEP21-B: 「今保存できる長さ」の表示。設定パネルが開いている間だけ、間引いて更新する。
   let lastSaveAvailableUpdate = 0;
+  let saveInfoRewound = false; // STEP23: 再生位置を過去に戻している状態か(ヒステリシス付き)
   function updateSaveAvailableInfo(force, now) {
     if (!force) {
       if (!secondaryControls.classList.contains("open")) return;
@@ -1481,7 +1495,14 @@
     const oldest = frameBuffer.length ? frameBuffer[0].time : null;
     const avail = computeSaveAvailableSec(playback.playbackTime, oldest, saveRangeSec);
     let text = "今保存できる長さ: 約" + avail.toFixed(1) + "秒（選択: " + saveRangeSec + "秒）";
-    if (avail < saveRangeSec - SAVE_SHORTFALL_NOTICE_SEC) {
+    // STEP23: 保存できる長さは再生位置から過去へ数える。再生位置を戻す/一時停止すると、
+    // バッファ最古フレームも進むため、待っても増えない。その場合は「溜まっていない」と誤解させない。
+    const nowT = now || performance.now();
+    const rewoundSec = playback.playbackTime == null ? null : (nowT - playback.playbackTime) / 1000 - delaySeconds;
+    saveInfoRewound = nextRewoundState(saveInfoRewound, rewoundSec);
+    if (avail < saveRangeSec - SAVE_SHORTFALL_NOTICE_SEC && saveInfoRewound) {
+      text += "\n" + formatSaveRewoundNote(avail);
+    } else if (avail < saveRangeSec - SAVE_SHORTFALL_NOTICE_SEC) {
       // 遅延設定が長く、保持時間の上限を超えて溜められない場合は、その旨を明示する
       const maxPossible = Math.min(saveRangeSec, getBufferRetentionSec() - delaySeconds);
       if (maxPossible < saveRangeSec - SAVE_SHORTFALL_NOTICE_SEC) {

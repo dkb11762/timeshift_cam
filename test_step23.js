@@ -11,7 +11,7 @@ function check(name, fn) {
 const html = fs.readFileSync(path.join(__dirname, "index.html"), "utf8");
 const m = html.match(/\/\/ STEP23-BEGIN([\s\S]*?)\/\/ STEP23-END/);
 assert.ok(m, "STEP23-BEGIN/ENDブロックが見つからない");
-const api = new Function(m[1] + "\nreturn {computeShownDelaySec,formatLiveStatusText,formatSaveRangeMeaning,formatSaveProgressText,SAVE_DONE_LIST_NOTE};")();
+const api = new Function(m[1] + "\nreturn {nextRewoundState,formatSaveRewoundNote,computeShownDelaySec,formatLiveStatusText,formatSaveRangeMeaning,formatSaveProgressText,SAVE_DONE_LIST_NOTE};")();
 
 console.log("\n[STEP23-A] 遅延表示は設定値でなく実測値");
 check("通常再生(10秒遅れ)なら約10秒", () => assert.strictEqual(api.computeShownDelaySec(50000, 40000 - 20), 10));
@@ -80,6 +80,37 @@ check("formatShotDateが秒まで(YYYY/MM/DD HH:MM:SS)。連番は付けてい�
   assert.strictEqual(fn(t), "2026/10/02 13:21:05");
   assert.notStrictEqual(fn(t), fn(t + 42000), "同じ分の2射が区別できる");
   assert.ok(!/射\s*\d/.test(fm));
+});
+
+
+console.log("\n[STEP23-B2] 「今保存できる長さ」: 再生位置を過去に戻している場合の説明");
+check("通常の遅延再生中(差≈0)は過去扱いにならない", () => assert.strictEqual(api.nextRewoundState(false, 0.1), false));
+check("5秒戻る(差≈5)で過去扱いになり、一時停止して時間が経っても維持", () => {
+  assert.strictEqual(api.nextRewoundState(false, 5), true);
+  assert.strictEqual(api.nextRewoundState(true, 12), true);
+});
+check("境界付近でヒステリシス: 入る3秒/戻る1.5秒(2秒前後で揺れても切り替わらない)", () => {
+  assert.strictEqual(api.nextRewoundState(false, 2.9), false);
+  assert.strictEqual(api.nextRewoundState(false, 3.1), true);
+  assert.strictEqual(api.nextRewoundState(true, 2.0), true);
+  assert.strictEqual(api.nextRewoundState(true, 1.4), false);
+  let st = false; const seq = [2.8, 3.2, 2.6, 3.4, 2.2, 2.9]; const out = seq.map((v) => (st = api.nextRewoundState(st, v)));
+  assert.deepStrictEqual(out, [false, true, true, true, true, true]);
+});
+check("実測が取れない(null)ときは過去扱いにしない", () => assert.strictEqual(api.nextRewoundState(true, null), false));
+check("過去に戻している場合の説明文(「最新へ戻る」を案内し、「時間が経つと」とは言わない)", () => {
+  const t = api.formatSaveRewoundNote(50.0);
+  assert.ok(t.includes("再生位置を過去に戻しているため、今は約50秒までしか保存できません"));
+  assert.ok(t.includes("「最新へ戻る」を押すと、より長く保存できます"));
+  assert.ok(!t.includes("時間が経つと"));
+});
+check("index.html: 過去に戻している場合は専用文言、蓄積途中は従来文言を維持。計算関数は不変", () => {
+  assert.ok(html.includes("nextRewoundState(saveInfoRewound, rewoundSec)"));
+  assert.ok(html.includes("formatSaveRewoundNote(avail)"));
+  assert.ok(html.includes("映像がまだ溜まっていません。時間が経つと選択した長さまで保存できます。"));
+  assert.ok(html.includes("遅延設定が長いため、最大で約"));
+  assert.ok(html.includes("function computeSaveAvailableSec(playbackTime, oldestTime, saveRangeSecValue) {"));
+  assert.ok(html.includes("return Math.max(0, Math.min(saveRangeSecValue, (playbackTime - oldestTime) / 1000));"));
 });
 
 console.log("\n[STEP23] 変更禁止範囲");
