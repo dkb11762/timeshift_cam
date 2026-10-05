@@ -335,6 +335,13 @@
   }
   #compareStartBtn:not(:disabled) { color: var(--accent); border-color: var(--accent); background: rgba(178,64,44,0.08); }
   #compareStartBtn:disabled { opacity: 0.5; }
+  /* STEP24: A/Bの選び方・同期の意味を伝える補助説明(表示テキストのみ。挙動は変えない) */
+  #compareHint { margin: 6px 0 0; }
+  #comparisonModeHint {
+    padding: 5px 14px; background: var(--bg-panel);
+    border-bottom: 1px solid var(--line);
+    font-size: 11px; line-height: 1.6; color: var(--text-dim);
+  }
 
   /* ---- STEP15: 保存済み射 x 保存済み射 「2画面比較」 ---- */
   #comparisonOverlay {
@@ -614,6 +621,8 @@
       <!-- STEP18(比較導線修正): 比較対象を選ぶ保存射一覧の直下(設定パネル内)に配置する。
            STEP18①でfooter側へ移したところ、STEP18③④の固定ボトムシートに隠れて
            押せなくなったため、STEP17と同じ位置へ戻した(id・JSロジックは無変更)。 -->
+      <!-- STEP24: 比較する2本の選び方の説明(選択本数に応じて文言を切り替える) -->
+      <p id="compareHint" class="hint-note">比較する2本を選んでください。1本目 → A、2本目 → B として比較します。</p>
       <button id="compareStartBtn" disabled>比較する（0/2）</button>
 
       <p class="hint-note">「最新へ戻る」は、設定した遅延時間を維持したまま、最新の遅延映像（リアルタイムではなく、設定した秒数だけ遅れた映像）に戻ります。</p>
@@ -672,8 +681,13 @@
     <button id="comparisonClose">比較終了</button>
   </div>
   <div id="comparisonSyncBar" style="display:none">
-    <span>同期ON：A・Bを同じ位置で再生</span>
+    <span>共通の経過時間（Aを基準）</span>
     <span id="comparisonSyncTimeDisplay">共通位置 00:00.00</span>
+  </div>
+  <!-- STEP24: A/Bの対応と、同期ON/OFFの意味を常時表示する -->
+  <div id="comparisonModeHint">
+    <div>A＝1本目に選んだ射 ／ B＝2本目に選んだ射</div>
+    <div id="comparisonModeText">同期OFF：A・Bをそれぞれ別々に操作できます。</div>
   </div>
   <div id="comparisonError" style="display:none"></div>
   <div id="comparisonPanels">
@@ -957,6 +971,8 @@
 
   // ---- STEP15: 保存済み射 x 保存済み射 「2画面比較」 ----
   const compareStartBtn = document.getElementById("compareStartBtn");
+  const compareHintEl = document.getElementById("compareHint"); // STEP24
+  const comparisonModeTextEl = document.getElementById("comparisonModeText"); // STEP24
   const comparisonOverlay = document.getElementById("comparisonOverlay");
   const comparisonCloseBtn = document.getElementById("comparisonClose");
   const comparisonSyncToggleBtn = document.getElementById("comparisonSyncToggle");
@@ -1637,6 +1653,13 @@
   function updateCompareStartButton() {
     compareStartBtn.disabled = compareSelection.length !== 2;
     compareStartBtn.textContent = "比較する（" + compareSelection.length + "/2）";
+    // STEP24: 選択本数に応じた補助説明(1本目 → A、2本目 → B)
+    compareHintEl.textContent =
+      compareSelection.length === 0
+        ? "比較する2本を選んでください。1本目 → A、2本目 → B として比較します。"
+        : compareSelection.length === 1
+        ? "Aを選択済み。あと1本選んでください（2本目 → B）。"
+        : "A・Bの2本を選択済み。選べるのは2本までです。";
   }
   // STEP17(§9): 一覧上の各チェックボックス横に、選択順(A/B)を表示する
   function refreshCompareSlotLabels() {
@@ -2491,6 +2514,10 @@
     comparisonSyncToggleBtn.textContent = "同期：" + (on ? "ON" : "OFF");
     comparisonSyncToggleBtn.classList.toggle("on", on);
     comparisonSyncBar.style.display = on ? "flex" : "none";
+    // STEP24: 同期ON/OFFの意味を常時表示の説明行に反映する(表示のみ。以降の同期ロジックは無変更)
+    comparisonModeTextEl.textContent = on
+      ? "同期ON：A・Bを同じ経過時間で操作します。ONにした時点で、BをAの位置に合わせます。"
+      : "同期OFF：A・Bをそれぞれ別々に操作できます。";
     if (!on) {
       // 8節: 同期中はcomparisonB.playback.update()を呼んでいない(位置はAから直接反映していた)ため、
       // Bの内部時計(_lastNow等)は同期していた間ずっと止まったまま。このままOFFにすると、次に
