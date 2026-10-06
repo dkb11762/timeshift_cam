@@ -2465,6 +2465,40 @@
   const comparisonB = createComparisonChannel("B");
   let comparisonRafId = null;
 
+  // ---- STEP25: 比較中のライブ処理停止 ----
+  // 60秒×2本の比較では、A/B合計で約2,600枚のImageBitmapを保持する。比較中もライブ側が
+  // フレーム取得(createImageBitmap)とバッファ保持(最大約75〜80秒分)を続けると、iPad Safariの
+  // メモリ圧でページが終了する(黒画面→再読み込み)有力な原因になるため、比較の間だけライブ側の
+  // 取得・バッファ保持を止める。カメラのMediaStream自体は停止しない(権限の再要求を避ける)。
+  let liveSuspendedForComparison = false;
+  // 比較セッション番号。openComparison()ごとに増え、closeComparison()/読込失敗でも増える。
+  // 非同期の読み込みが完了した時点で番号が変わっていれば「古い読み込み」とみなし、
+  // 読み込んだImageBitmapをチャンネルへ渡さずcloseする(遅れて完了した片方のBitmap残留を防ぐ)。
+  let comparisonSessionId = 0;
+
+  /** 比較開始前に呼ぶ。ライブ取得を止め、ライブbufferのBitmapを解放して空にする(カメラは止めない)。 */
+  function suspendLiveForComparison() {
+    if (liveSuspendedForComparison) return;
+    liveSuspendedForComparison = true;
+    // 既存のcameraGeneration機構を利用: すでに開始済みのcreateImageBitmapが後から完了しても、
+    // captureFrame()のthenで世代不一致となり、bufferへ追加されずbmp.close()される。
+    // runningがfalse(startCamera()実行中)の場合は増やさない: startCamera()自身が世代で
+    // 自分のstreamの有効性を判定しており、増やすと取得したstreamが破棄されてしまうため。
+    // (その間は取得済みの保留Bitmapも無い)
+    if (running) cameraGeneration += 1;
+    clearBuffer(); // frameBufferの全Bitmapをclose()して空にする(+実効fps履歴をクリア)
+    playback.goLive(); // バッファが空になるため、再生位置の手動操作状態を持ち越さない(カメラ切替時と同じ扱い)
+    lastDisplayedFrameTime = null;
+    lastDisplayedTargetTime = null;
+    shownDelaySec = null;
+  }
+
+  /** 比較終了(または読み込み失敗)時に呼ぶ。ライブ取得を再開する。bufferは新しいフレームから再構築される。 */
+  function resumeLiveAfterComparison() {
+    if (!liveSuspendedForComparison) return;
+    liveSuspendedForComparison = false;
+  }
+
   // ---- STEP16: A/B同期 ----
   // comparisonA/comparisonBそれぞれの独立構造(frameBuffer/playback等)は一切変更しない。
   // 同期は「比較セッション全体の状態」として、この2つの変数だけを追加する。
@@ -2656,7 +2690,7 @@
    * StorageEngine.loadShotFrames()やcreateImageBitmap()自体の問題ではなかった。
    * 呼び出しを setComparisonMarkingMode(channel, false) に修正する。
    */
-  async function loadShotIntoChannel(channel, shot) {
+  async function loadShotIntoChannel(channel, shot, sessionId) {
     let step = "start";
     console.log("[comparison] start", channel.label, shot.id);
     try {
@@ -2664,14 +2698,36 @@
       channel.shotId = shot.id;
       channel.titleEl.textContent =
         channel.label + "：" + formatShotDate(shot.createdAt) + "（" + (shot.durationMs / 1000).toFixed(1) + "秒）";
-      // StorageEngine.loadShotFrames()の戻り値をそのまま保持する(不要な複製はしない)
-      channel.frameBuffer = await StorageEngine.loadShotFrames(shot.id);
-      console.log("[comparison] frames loaded", channel.label, channel.frameBuffer.length);
+      // StorageEngine.loadShotFrames()の戻り値をそのまま使う(不要な複製はしない)。
+      // STEP25: 読み込み中に比較が閉じられた/他方の失敗で打ち切られた場合(セッション番号が変わった場合)、
+      // 遅れて完了したBitmapをチャンネルへ渡さずcloseする。チャンネルへの代入は、以降awaitが
+      // 残らない地点(下のloadShotMarkings後)で行う。
+      const loadedFrames = await StorageEngine.loadShotFrames(shot.id);
+      console.log("[comparison] frames loaded", channel.label, loadedFrames.length);
+      if (sessionId !== comparisonSessionId) {
+        closeComparisonFrames(loadedFrames);
+        throw makeStaleComparisonError();
+      }
 
       step = "frameCheck";
-      if (!channel.frameBuffer.length) {
+      if (!loadedFrames.length) {
         throw new Error("フレームが空です: " + shot.id);
       }
+
+      step = "loadShotMarkings";
+      let loadedMarkings;
+      try {
+        loadedMarkings = await StorageEngine.loadShotMarkings(shot.id);
+      } catch (mErr) {
+        console.error("マーキングの読み込みに失敗しました:", mErr);
+        loadedMarkings = [];
+      }
+      if (sessionId !== comparisonSessionId) {
+        closeComparisonFrames(loadedFrames);
+        throw makeStaleComparisonError();
+      }
+      channel.frameBuffer = loadedFrames; // ここ以降、この関数内にawaitは無い
+      channel.markings = loadedMarkings;
 
       step = "canvasSize";
       channel.durationMs = channel.frameBuffer[channel.frameBuffer.length - 1].time;
@@ -2679,14 +2735,6 @@
       channel.canvas.height = channel.frameBuffer[0].bitmap.height;
       channel.markOverlay.width = channel.canvas.width;
       channel.markOverlay.height = channel.canvas.height;
-
-      step = "loadShotMarkings";
-      try {
-        channel.markings = await StorageEngine.loadShotMarkings(shot.id);
-      } catch (mErr) {
-        console.error("マーキングの読み込みに失敗しました:", mErr);
-        channel.markings = [];
-      }
 
       step = "markingMode";
       setComparisonMarkingMode(channel, false); // STEP19修正: (channel, on) の2引数で呼ぶ
@@ -2726,6 +2774,18 @@
       }
       throw err;
     }
+  }
+
+  // STEP25: フレーム配列のImageBitmapを解放する / 古い読み込みを示すエラー
+  function closeComparisonFrames(frames) {
+    for (const f of frames) {
+      try { f.bitmap.close(); } catch (e) {}
+    }
+  }
+  function makeStaleComparisonError() {
+    const e = new Error("比較の読み込みは中止されました(古い読み込み)");
+    e.comparisonStale = true;
+    return e;
   }
 
   /** チャンネルの状態を解放する(閉じる時、または読み込み失敗時のロールバック用)。 */
@@ -2803,14 +2863,31 @@
       alert("同じ射は2つの比較対象に選択できません。");
       return;
     }
+    if (isSaving) {
+      // STEP25: 射の保存中は保存対象のライブフレームを使っているため、ライブbufferを解放する比較は開始しない
+      alert("射の保存中は比較を開始できません。保存が終わってからもう一度お試しください。");
+      return;
+    }
+    const sessionId = ++comparisonSessionId;
+    // STEP25: A/Bの読み込みを始める前に、ライブ側のフレーム取得を止めてライブbufferを空にする
+    suspendLiveForComparison();
     comparisonErrorEl.style.display = "none";
     comparisonOverlay.style.display = "flex";
     setComparisonSync(false); // 16節: 開くたびに必ず同期OFFから開始する
     try {
       // 35節: 両方の読み込みが完了してから表示する(中途半端な状態で見せない)
       // STEP19: Promise.allの並列構成自体は変更しない(診断結果次第で別途検討する)。
-      await Promise.all([loadShotIntoChannel(comparisonA, shotA), loadShotIntoChannel(comparisonB, shotB)]);
+      await Promise.all([
+        loadShotIntoChannel(comparisonA, shotA, sessionId),
+        loadShotIntoChannel(comparisonB, shotB, sessionId),
+      ]);
     } catch (err) {
+      if (err && err.comparisonStale) {
+        // 比較がすでに閉じられている(closeComparison()が後始末・ライブ再開済み)。何もしない。
+        return;
+      }
+      // STEP25: 以降に完了する他方の読み込みを「古い読み込み」として扱い、遅れて完了したBitmapをcloseさせる
+      comparisonSessionId++;
       // STEP19診断: どちらのチャンネル(A/B)のどの段階で失敗したかを併せて記録する。
       console.error("[comparison] load failed (openComparison)", {
         label: err && err.comparisonLabel,
@@ -2822,6 +2899,7 @@
       releaseComparisonChannel(comparisonA);
       releaseComparisonChannel(comparisonB);
       comparisonOverlay.style.display = "none";
+      resumeLiveAfterComparison(); // STEP25: 読み込み失敗時もライブ取得を再開する
       showComparisonError(
         "比較対象の読み込みに失敗しました" +
           (err && err.comparisonLabel ? "（" + err.comparisonLabel + " / " + (err.comparisonStep || "?") + "）" : "")
@@ -2836,8 +2914,10 @@
     comparisonOverlay.style.display = "none";
     if (comparisonRafId) cancelAnimationFrame(comparisonRafId);
     comparisonRafId = null;
+    comparisonSessionId++; // STEP25: 読み込み中だった場合、その読み込みを「古い読み込み」にする
     releaseComparisonChannel(comparisonA);
     releaseComparisonChannel(comparisonB);
+    resumeLiveAfterComparison(); // STEP25: ライブ取得を再開(bufferは新しいフレームから再構築される)
     // 16節: 比較セッションの同期状態は破棄する(次回開いた時は必ずOFFから)
     comparisonSyncEnabled = false;
     comparisonSyncTime = 0;
@@ -3459,7 +3539,9 @@
 
   function loop() {
     const now = performance.now();
-    if (running) {
+    // STEP25: 比較中(liveSuspendedForComparison)はライブのフレーム取得・描画を行わない
+    // (カメラのstream自体は維持する)。比較終了後に再開し、bufferは新しいフレームから再構築される。
+    if (running && !liveSuspendedForComparison) {
       captureFrame(now);
       renderFrame(now);
     }
