@@ -897,7 +897,9 @@
   let cameraGeneration = 0;       // カメラ切替のたびに増分
   let pendingBitmapCount = 0;     // createImageBitmap待ち件数
   let debugMode = false;
-
+　let cameraRecorder = null;
+let cameraRecordingChunks = [];
+let cameraRecording = false;
   // 実効fps測定用（直近の確定(=バッファ追加済み)フレーム時刻の履歴）
   const captureTimestamps = [];
 
@@ -3277,7 +3279,121 @@ applyOrientation();
     setStatus("LIVE（遅延中）", true);
     running = true;
   }
+function pickCameraRecordingMimeType() {
+  if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) {
+    return "";
+  }
 
+  const candidates = [
+    'video/mp4;codecs="avc1.42E01E,mp4a.40.2"',
+    "video/mp4;codecs=h264",
+    "video/mp4",
+    "video/webm;codecs=vp9",
+    "video/webm;codecs=vp8",
+    "video/webm",
+  ];
+
+  for (const type of candidates) {
+    if (MediaRecorder.isTypeSupported(type)) {
+      return type;
+    }
+  }
+
+  return "";
+}
+
+async function startCameraRecording() {
+  if (!stream || cameraRecording) return;
+
+  if (!window.MediaRecorder) {
+    setMessage("このブラウザでは通常録画に対応していません。");
+    return;
+  }
+
+  const mimeType = pickCameraRecordingMimeType();
+
+  if (!mimeType) {
+    setMessage("録画形式に対応していません。");
+    return;
+  }
+
+  cameraRecordingChunks = [];
+
+  try {
+    cameraRecorder = new MediaRecorder(stream, {
+      mimeType: mimeType,
+    });
+
+    cameraRecorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) {
+        cameraRecordingChunks.push(event.data);
+      }
+    };
+
+    cameraRecorder.onstop = async () => {
+      const blob = new Blob(cameraRecordingChunks, {
+        type: mimeType,
+      });
+
+      cameraRecordingChunks = [];
+
+      const extension = mimeType.startsWith("video/mp4")
+        ? "mp4"
+        : "webm";
+
+      const file = new File(
+        [blob],
+        `timeshift_recording_${Date.now()}.${extension}`,
+        { type: mimeType }
+      );
+
+      try {
+        if (
+          navigator.share &&
+          navigator.canShare &&
+          navigator.canShare({ files: [file] })
+        ) {
+          await navigator.share({
+            files: [file],
+            title: "録画した動画",
+          });
+        } else {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = file.name;
+          a.click();
+          URL.revokeObjectURL(url);
+        }
+      } catch (err) {
+        console.log("動画の共有をキャンセル:", err);
+      }
+
+      cameraRecorder = null;
+    };
+
+    cameraRecorder.start();
+    cameraRecording = true;
+
+    setMessage("録画中...");
+    console.log("通常録画開始:", mimeType);
+  } catch (err) {
+    console.error("録画開始エラー:", err);
+    cameraRecorder = null;
+    cameraRecordingChunks = [];
+    setMessage("録画を開始できませんでした。");
+  }
+}
+
+function stopCameraRecording() {
+  if (!cameraRecorder || !cameraRecording) return;
+
+  cameraRecorder.stop();
+  cameraRecording = false;
+
+  setMessage("録画を処理しています...");
+  console.log("通常録画停止");
+}
   // ---- 映像の向き補正 ----
   // iOS Safariでは、<video>要素は自動的に正しい向きで表示されるが、
   // CanvasへdrawImage()した場合はカメラセンサーの素の向き(多くは縦長)のまま
