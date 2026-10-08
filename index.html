@@ -997,6 +997,9 @@ function pickCameraRecordingMimeType() {
 
     cameraRecorder.start();
     cameraRecording = true;
+    flipCamera.disabled = true;
+mirrorToggle.disabled = true;
+rotateView.disabled = true;
 
    setMessage("録画中...");
 
@@ -1018,6 +1021,9 @@ console.log("通常録画開始:", mimeType);
 
   cameraRecorder.stop();
   cameraRecording = false;
+    flipCamera.disabled = false;
+mirrorToggle.disabled = false;
+rotateView.disabled = false;
 
   setMessage("録画を処理しています...");
     if (cameraRecordStatus) {
