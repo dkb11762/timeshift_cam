@@ -741,7 +741,7 @@
 </div>
 
 <video id="sourceVideo" autoplay muted playsinline style="display:none"></video>
-
+<div id="cameraQualityInfo">カメラ：確認中</div>
 <script src="bufferEngine.js"></script>
 <script src="playbackEngine.js"></script>
 <script src="storageEngine.js"></script>
@@ -3248,7 +3248,31 @@
     }
 
     sourceVideo.srcObject = stream;
-    await sourceVideo.play().catch(() => {});
+await sourceVideo.play().catch(() => {});
+
+const videoTrack = stream.getVideoTracks()[0];
+
+if (videoTrack) {
+  const settings = videoTrack.getSettings();
+
+  const width = settings.width || "?";
+  const height = settings.height || "?";
+  const fps = settings.frameRate
+    ? settings.frameRate.toFixed(1)
+    : "?";
+
+  const qualityInfo = document.getElementById("cameraQualityInfo");
+
+  if (qualityInfo) {
+    qualityInfo.textContent =
+      `実際のカメラ：${width}×${height} / ${fps}fps`;
+  }
+
+  console.log("実際のカメラ設定:", settings);
+}
+
+applyOrientation();
+    
 
     applyOrientation();
 
