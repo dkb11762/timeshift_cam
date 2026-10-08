@@ -293,7 +293,6 @@
   /* スロー確認中は、頻繁に使わない補助コントロール(遅延設定・カメラ切替等)を隠し、
      映像とスロー操作に必要なボタンだけを残す。 */
   #app.focus-mode #secondaryControls { display: none; }
-  #app.focus-mode .act-slow-check { display: none; }
 
   /* ---- 一定時間操作がない場合、UIを薄くする(タップで再表示) ---- */
   #app.ui-dim header, #app.ui-dim footer, #app.ui-dim #fsControls {
@@ -534,7 +533,6 @@
     <div id="fsControls">
       <div class="row">
         <button class="act-seek-back seek-major">5秒戻る</button>
-        <button class="act-slow-check primary grow2">スロー確認</button>
         <button class="act-seek-fwd seek-minor">5秒進む</button>
       </div>
       <div class="row">
@@ -561,7 +559,6 @@
 
     <div class="row">
       <button class="act-seek-back seek-major">5秒戻る</button>
-      <button class="act-slow-check primary grow2">スロー確認</button>
       <button class="act-seek-fwd seek-minor">5秒進む</button>
     </div>
     <div class="row">
@@ -656,7 +653,6 @@
     <p id="shotReviewPosition">0.0 / 0.0秒</p>
     <div class="row">
       <button id="shotSeekBack" class="seek-major">5秒戻る</button>
-      <button id="shotSlowCheck" class="primary grow2">スロー確認</button>
       <button id="shotSeekForward" class="seek-minor">5秒進む</button>
     </div>
     <div class="row">
@@ -706,7 +702,6 @@
         </div>
         <div class="row">
           <button data-ch="A" data-act="stepBack" class="wide">1F◀</button>
-          <button data-ch="A" data-act="slowCheck" class="wide">スロー確認</button>
           <button data-ch="A" data-act="stepFwd" class="wide">▶1F</button>
         </div>
         <button data-ch="A" data-act="markingToggle" id="comparisonMarkToggleA" class="comparison-mark-toggle">マーキング表示</button>
@@ -729,7 +724,6 @@
         </div>
         <div class="row">
           <button data-ch="B" data-act="stepBack" class="wide">1F◀</button>
-          <button data-ch="B" data-act="slowCheck" class="wide">スロー確認</button>
           <button data-ch="B" data-act="stepFwd" class="wide">▶1F</button>
         </div>
         <button data-ch="B" data-act="markingToggle" id="comparisonMarkToggleB" class="comparison-mark-toggle">マーキング表示</button>
@@ -900,6 +894,120 @@
 　let cameraRecorder = null;
 let cameraRecordingChunks = [];
 let cameraRecording = false;
+function pickCameraRecordingMimeType() {
+  if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) {
+    return "";
+  }
+
+  const candidates = [
+    'video/mp4;codecs="avc1.42E01E,mp4a.40.2"',
+    "video/mp4;codecs=h264",
+    "video/mp4",
+    "video/webm;codecs=vp9",
+    "video/webm;codecs=vp8",
+    "video/webm",
+  ];
+
+  for (const type of candidates) {
+    if (MediaRecorder.isTypeSupported(type)) {
+      return type;
+    }
+  }
+
+  return "";
+}
+  async function startCameraRecording() {
+  if (!stream || cameraRecording) return;
+
+  if (!window.MediaRecorder) {
+    setMessage("このブラウザでは通常録画に対応していません。");
+    return;
+  }
+
+  const mimeType = pickCameraRecordingMimeType();
+
+  if (!mimeType) {
+    setMessage("録画形式に対応していません。");
+    return;
+  }
+
+  cameraRecordingChunks = [];
+
+  try {
+    cameraRecorder = new MediaRecorder(stream, {
+      mimeType: mimeType,
+    });
+
+    cameraRecorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) {
+        cameraRecordingChunks.push(event.data);
+      }
+    };
+
+    cameraRecorder.onstop = async () => {
+      const blob = new Blob(cameraRecordingChunks, {
+        type: mimeType,
+      });
+
+      cameraRecordingChunks = [];
+
+      const extension = mimeType.startsWith("video/mp4")
+        ? "mp4"
+        : "webm";
+
+      const file = new File(
+        [blob],
+        `timeshift_recording_${Date.now()}.${extension}`,
+        { type: mimeType }
+      );
+
+      try {
+        if (
+          navigator.share &&
+          navigator.canShare &&
+          navigator.canShare({ files: [file] })
+        ) {
+          await navigator.share({
+            files: [file],
+            title: "録画した動画",
+          });
+        } else {
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = file.name;
+          a.click();
+          URL.revokeObjectURL(url);
+        }
+      } catch (err) {
+        console.log("動画の共有をキャンセル:", err);
+      }
+
+      cameraRecorder = null;
+    };
+
+    cameraRecorder.start();
+    cameraRecording = true;
+
+    setMessage("録画中...");
+    console.log("通常録画開始:", mimeType);
+  } catch (err) {
+    console.error("録画開始エラー:", err);
+    cameraRecorder = null;
+    cameraRecordingChunks = [];
+    setMessage("録画を開始できませんでした。");
+  }
+}
+  function stopCameraRecording() {
+  if (!cameraRecorder || !cameraRecording) return;
+
+  cameraRecorder.stop();
+  cameraRecording = false;
+
+  setMessage("録画を処理しています...");
+  console.log("通常録画停止");
+}
+  
   // 実効fps測定用（直近の確定(=バッファ追加済み)フレーム時刻の履歴）
   const captureTimestamps = [];
 
@@ -967,7 +1075,6 @@ let cameraRecording = false;
   const shotPlayPauseBtn = document.getElementById("shotPlayPause");
   const shotSeekBackBtn = document.getElementById("shotSeekBack");
   const shotSeekForwardBtn = document.getElementById("shotSeekForward");
-  const shotSlowCheckBtn = document.getElementById("shotSlowCheck");
   const shotSlowRatePresetsRow = document.getElementById("shotSlowRatePresets");
   const shotSlowWindowPresetsRow = document.getElementById("shotSlowWindowPresets");
 
@@ -995,7 +1102,6 @@ let cameraRecording = false;
   const seekBackBtns = document.querySelectorAll(".act-seek-back");
   const seekForwardBtns = document.querySelectorAll(".act-seek-fwd");
   const playPauseBtns = document.querySelectorAll(".act-play-pause");
-  const slowCheckBtns = document.querySelectorAll(".act-slow-check");
   const goLiveBtns = document.querySelectorAll(".act-go-live");
 
   const bufferCanvas = document.createElement("canvas");
@@ -2225,26 +2331,14 @@ let cameraRecording = false;
     });
   }
   function setReviewSlowRate(rate) {
-    reviewSlowRate = rate;
-    renderShotSlowRatePresets();
-    const label = shotPlayback ? shotPlayback.getStateLabel() : "";
-    if (label === "SLOW" || label === "SLOW_PAUSED") reviewSlowCheck();
-  }
-  function setReviewSlowWindow(sec) {
-    reviewSlowWindowSec = sec;
-    renderShotSlowWindowPresets();
-    const label = shotPlayback ? shotPlayback.getStateLabel() : "";
-    if (label === "SLOW" || label === "SLOW_PAUSED") reviewSlowCheck();
-  }
-  function reviewSlowCheck() {
-    if (!shotPlayback) return;
-    // ライブのplayRecentWindow()はデフォルトで終了時にgoLive()するが、レビューには
-    // 「ライブへ戻る」という概念が無いため、区間終端でそのまま一時停止させる。
-    shotPlayback.playRecentWindow(reviewSlowWindowSec, reviewSlowRate, () => {
-      shotPlayback.pause();
-    });
-  }
+  reviewSlowRate = rate;
+  renderShotSlowRatePresets();
+}
 
+function setReviewSlowWindow(sec) {
+  reviewSlowWindowSec = sec;
+  renderShotSlowWindowPresets();
+}
   // ---- STEP12: マーキングOverlay(レビュー側)のサイズ同期 ----
   // 今回は配置とサイズ同期のみ。実際の描画・タップ操作・保存はまだ実装しない
   // (pointer-eventsは常にnoneのまま=操作を一切受け付けない)。
@@ -2658,24 +2752,12 @@ let cameraRecording = false;
       renderComparisonWindowPresets(channel);
     }
   }
-  function comparisonSlowCheck(channel) {
-    if (!channel.playback) return;
-    // 単一レビューと同じ考え方: 比較には「ライブへ戻る」概念が無いため、区間終端で一時停止する
-    channel.playback.playRecentWindow(channel.slowWindowSec, channel.slowRate, () => channel.playback.pause());
-  }
   // STEP16: 同期中の「スロー確認」(7-3節)。同期中はcomparisonLoop側で毎フレームBの
   // playbackTime/playbackRateをAからそのまま反映しており、B自身のPlaybackEngine.update()は
   // 呼ばれない。そのためBに対してもplayRecentWindow()を発行してしまうと、Bの内部状態
   // (_slowEndTime等)が消費されないまま残ってしまう(同期OFFに戻した瞬間に誤発火するおそれが
   // ある)。したがって、駆動側であるAだけにplayRecentWindow()を発行する。
-  function comparisonSyncSlowCheck() {
-    if (!comparisonA.playback || !comparisonB.playback) return;
-    comparisonA.playback.playRecentWindow(comparisonA.slowWindowSec, comparisonA.slowRate, () => {
-      comparisonA.playback.pause();
-      comparisonB.playback.pause();
-    });
-  }
-
+ 
   /**
    * 指定チャンネルへ射を読み込む(A/Bどちらにも同じ関数を使う。ロジックの二重実装を避ける)。
    *
@@ -2982,10 +3064,7 @@ let cameraRecording = false;
         updateComparisonPosition(channel);
         break;
       }
-      case "slowCheck":
-        comparisonSlowCheck(channel);
-        break;
-      case "markingToggle":
+            case "markingToggle":
         setComparisonMarkingMode(channel, !channel.markingMode);
         break;
     }
@@ -3026,9 +3105,6 @@ let cameraRecording = false;
         });
         break;
       }
-      case "slowCheck":
-        comparisonSyncSlowCheck();
-        break;
     }
   }
 
@@ -3148,7 +3224,7 @@ let cameraRecording = false;
     shotPlayback.playbackTime = clampReviewTime(shotPlayback.playbackTime);
     updateShotReviewPosition();
   });
-  shotSlowCheckBtn.addEventListener("click", reviewSlowCheck);
+  
 
   flipBtn.addEventListener("click", async () => {
     if (isSaving) return; // STEP21-B: 保存中はカメラ切替をしない(念のためのガード。ボタン自体もdisabled)
@@ -3162,9 +3238,6 @@ let cameraRecording = false;
   seekBackBtns.forEach((btn) => btn.addEventListener("click", () => playback.seekBy(-SEEK_STEP_SEC)));
   seekForwardBtns.forEach((btn) => btn.addEventListener("click", () => playback.seekBy(SEEK_STEP_SEC)));
   goLiveBtns.forEach((btn) => btn.addEventListener("click", () => playback.goLive()));
-  slowCheckBtns.forEach((btn) =>
-    btn.addEventListener("click", () => playback.playRecentWindow(slowWindowSec, slowRate))
-  );
   playPauseBtns.forEach((btn) =>
     btn.addEventListener("click", () => {
       const label = playback.getStateLabel();
