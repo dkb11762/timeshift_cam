@@ -584,6 +584,9 @@
   <button id="cameraRecordBtn" class="wide primary">録画開始</button>
 </div>
 <p id="cameraRecordStatus" class="hint-note" style="display:none"></p>
+      <button id="cameraRecordRetryBtn" class="wide" style="display:none">
+  もう一度保存
+</button>
       <div class="label" style="margin-top:14px">スロー速度</div>
       <div class="row" id="slowRatePresets"></div>
 
@@ -950,6 +953,8 @@ function pickCameraRecordingMimeType() {
     };
 
     cameraRecorder.onstop = async () => {
+      let shareCancelled = false;
+      
       const blob = new Blob(cameraRecordingChunks, {
         type: mimeType,
       });
@@ -984,14 +989,24 @@ lastCameraRecordingFile = file;
           a.click();
           URL.revokeObjectURL(url);
         }
-        } catch (err) {
-      console.log("動画の共有をキャンセル:", err);
-    }
+} catch (err) {
+  console.log("動画の共有をキャンセル:", err);
 
-    if (cameraRecordStatus) {
-      cameraRecordStatus.textContent = "";
-      cameraRecordStatus.style.display = "none";
-    }
+  shareCancelled = true;
+
+  if (cameraRecordRetryBtn) {
+    cameraRecordRetryBtn.style.display = "block";
+  }
+
+  if (cameraRecordStatus) {
+    cameraRecordStatus.textContent = "保存されていません。もう一度保存できます。";
+    cameraRecordStatus.style.display = "block";
+  }
+}
+   if (cameraRecordStatus && !shareCancelled) {
+  cameraRecordStatus.textContent = "";
+  cameraRecordStatus.style.display = "none";
+}
 
     cameraRecorder = null;;
     };
@@ -1104,6 +1119,32 @@ rotateView.disabled = false;
   const shotSlowRatePresetsRow = document.getElementById("shotSlowRatePresets");
   const shotSlowWindowPresetsRow = document.getElementById("shotSlowWindowPresets");
 　const cameraRecordBtn = document.getElementById("cameraRecordBtn");
+  cameraRecordRetryBtn.addEventListener("click", async () => {
+  if (!lastCameraRecordingFile) return;
+
+  try {
+    if (
+      navigator.share &&
+      navigator.canShare &&
+      navigator.canShare({ files: [lastCameraRecordingFile] })
+    ) {
+      await navigator.share({
+        files: [lastCameraRecordingFile],
+        title: "録画した動画",
+      });
+
+      cameraRecordRetryBtn.style.display = "none";
+
+      if (cameraRecordStatus) {
+        cameraRecordStatus.textContent = "";
+        cameraRecordStatus.style.display = "none";
+      }
+    }
+  } catch (err) {
+    console.log("再保存をキャンセル:", err);
+  }
+});//これも仮置き
+  const cameraRecordRetryBtn = document.getElementById("cameraRecordRetryBtn");
   cameraRecordBtn.addEventListener("click", async () => {
   if (cameraRecording) {
     stopCameraRecording();
