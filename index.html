@@ -584,6 +584,13 @@
   <button id="cameraRecordBtn" class="wide primary">録画開始</button>
 </div>
 <p id="cameraRecordStatus" class="hint-note" style="display:none"></p>
+<div class="label" style="margin-top:14px">カメラ画質</div>
+<div class="row" id="cameraQualityPresets">
+  <button data-quality="standard" class="wide">標準</button>
+  <button data-quality="high" class="wide">高画質</button>
+  <button data-quality="highFps" class="wide">高FPS</button>
+</div>
+<p id="cameraQualityStatus" class="hint-note"></p>
       <button id="cameraRecordRetryBtn" class="wide" style="display:none">
   もう一度保存
 </button>
@@ -882,6 +889,30 @@
   let delaySeconds = Number(localStorage.getItem("delaySeconds")) || DEFAULT_DELAY;
   let mirrored = localStorage.getItem("mirrored") === "1";
   let facingMode = localStorage.getItem("facingMode") || "environment";
+  let cameraQualityMode =
+  localStorage.getItem("cameraQualityMode") || "high";
+  const CAMERA_QUALITY_OPTIONS = {
+  standard: {
+    label: "標準",
+    width: 1280,
+    height: 720,
+    frameRate: 30,
+  },
+
+  high: {
+    label: "高画質",
+    width: 1920,
+    height: 1080,
+    frameRate: 30,
+  },
+
+  highFps: {
+    label: "高FPS",
+    width: 1920,
+    height: 1080,
+    frameRate: 60,
+  },
+};
   let slowWindowSec = Number(localStorage.getItem("slowWindowSec")) || DEFAULT_SLOW_WINDOW_SEC;
   let slowRate = Number(localStorage.getItem("slowRate")) || DEFAULT_SLOW_RATE;
   // STEP21-B: 保存範囲。キーが無ければ新しい初期値(60秒)。選択肢にある値(10秒を含む)は維持。
@@ -1003,11 +1034,10 @@ lastCameraRecordingFile = file;
     cameraRecordStatus.style.display = "block";
   }
 }
-   if (cameraRecordStatus && !shareCancelled) {
+  if (cameraRecordStatus) {
   cameraRecordStatus.textContent = "";
   cameraRecordStatus.style.display = "none";
 }
-
     cameraRecorder = null;;
     };
 
@@ -1119,6 +1149,48 @@ rotateView.disabled = false;
   const shotSlowRatePresetsRow = document.getElementById("shotSlowRatePresets");
   const shotSlowWindowPresetsRow = document.getElementById("shotSlowWindowPresets");
 　const cameraRecordBtn = document.getElementById("cameraRecordBtn");
+  const cameraQualityPresets =
+  document.querySelectorAll("[data-quality]");
+const cameraQualityStatus =
+  document.getElementById("cameraQualityStatus");
+  cameraQualityPresets.forEach((button) => {
+  button.addEventListener("click", () => {
+    const mode = button.dataset.quality;
+
+    if (!CAMERA_QUALITY_OPTIONS[mode]) return;
+
+    cameraQualityMode = mode;
+    localStorage.setItem("cameraQualityMode", mode);
+
+    cameraQualityPresets.forEach((btn) => {
+      btn.classList.toggle(
+        "primary",
+        btn.dataset.quality === mode
+      );
+    });
+
+    const option = CAMERA_QUALITY_OPTIONS[mode];
+
+    if (cameraQualityStatus) {
+      cameraQualityStatus.textContent =
+        `${option.label}：${option.width}×${option.height} / ${option.frameRate}fps`;
+    }
+  });
+});
+  cameraQualityPresets.forEach((button) => {
+  button.classList.toggle(
+    "primary",
+    button.dataset.quality === cameraQualityMode
+  );
+});
+
+const initialQuality =
+  CAMERA_QUALITY_OPTIONS[cameraQualityMode];
+
+if (cameraQualityStatus && initialQuality) {
+  cameraQualityStatus.textContent =
+    `${initialQuality.label}：${initialQuality.width}×${initialQuality.height} / ${initialQuality.frameRate}fps`;
+}
   const cameraRecordRetryBtn = document.getElementById("cameraRecordRetryBtn");
   cameraRecordBtn.addEventListener("click", async () => {
   if (cameraRecording) {
