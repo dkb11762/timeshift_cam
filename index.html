@@ -1119,6 +1119,30 @@ rotateView.disabled = false;
   const shotSlowRatePresetsRow = document.getElementById("shotSlowRatePresets");
   const shotSlowWindowPresetsRow = document.getElementById("shotSlowWindowPresets");
 　const cameraRecordBtn = document.getElementById("cameraRecordBtn");
+  //これも仮置き
+  const cameraRecordRetryBtn = document.getElementById("cameraRecordRetryBtn");
+  cameraRecordBtn.addEventListener("click", async () => {
+  if (cameraRecording) {
+    stopCameraRecording();
+    cameraRecordBtn.textContent = "録画開始";
+  } else {
+    await startCameraRecording();
+
+    if (cameraRecording) {
+      cameraRecordBtn.textContent = "録画停止";
+    }
+  }
+});　
+  document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) return;
+  if (!cameraRecording) return;
+
+  console.log("画面が非表示になったため録画停止");
+
+  stopCameraRecording();
+  cameraRecordBtn.textContent = "録画開始";
+});
+  //仮置き
   cameraRecordRetryBtn.addEventListener("click", async () => {
   if (!lastCameraRecordingFile) return;
 
@@ -1143,30 +1167,7 @@ rotateView.disabled = false;
   } catch (err) {
     console.log("再保存をキャンセル:", err);
   }
-});//これも仮置き
-  const cameraRecordRetryBtn = document.getElementById("cameraRecordRetryBtn");
-  cameraRecordBtn.addEventListener("click", async () => {
-  if (cameraRecording) {
-    stopCameraRecording();
-    cameraRecordBtn.textContent = "録画開始";
-  } else {
-    await startCameraRecording();
-
-    if (cameraRecording) {
-      cameraRecordBtn.textContent = "録画停止";
-    }
-  }
-});　
-  document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) return;
-  if (!cameraRecording) return;
-
-  console.log("画面が非表示になったため録画停止");
-
-  stopCameraRecording();
-  cameraRecordBtn.textContent = "録画開始";
 });
-  //仮置き
   const cameraRecordStatus = document.getElementById("cameraRecordStatus");
   // ---- STEP15: 保存済み射 x 保存済み射 「2画面比較」 ----
   const compareStartBtn = document.getElementById("compareStartBtn");
