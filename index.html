@@ -1115,6 +1115,15 @@ rotateView.disabled = false;
     }
   }
 });　
+  document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) return;
+  if (!cameraRecording) return;
+
+  console.log("画面が非表示になったため録画停止");
+
+  stopCameraRecording();
+  cameraRecordBtn.textContent = "録画開始";
+});
   //仮置き
   const cameraRecordStatus = document.getElementById("cameraRecordStatus");
   // ---- STEP15: 保存済み射 x 保存済み射 「2画面比較」 ----
