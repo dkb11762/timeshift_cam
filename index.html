@@ -898,6 +898,7 @@
 　let cameraRecorder = null;
 let cameraRecordingChunks = [];
 let cameraRecording = false;
+let lastCameraRecordingFile = null;
 function pickCameraRecordingMimeType() {
   if (!window.MediaRecorder || !MediaRecorder.isTypeSupported) {
     return "";
@@ -964,7 +965,7 @@ function pickCameraRecordingMimeType() {
         `timeshift_recording_${Date.now()}.${extension}`,
         { type: mimeType }
       );
-
+lastCameraRecordingFile = file;
       try {
         if (
           navigator.share &&
