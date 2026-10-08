@@ -579,7 +579,11 @@
         <button id="mirrorToggle" class="wide">左右反転</button>
         <button id="rotateView" class="wide">映像回転</button>
       </div>
-
+<div class="label" style="margin-top:14px">通常録画</div>
+<div class="row">
+  <button id="cameraRecordBtn" class="wide primary">録画開始</button>
+</div>
+<p id="cameraRecordStatus" class="hint-note" style="display:none"></p>
       <div class="label" style="margin-top:14px">スロー速度</div>
       <div class="row" id="slowRatePresets"></div>
 
@@ -979,18 +983,29 @@ function pickCameraRecordingMimeType() {
           a.click();
           URL.revokeObjectURL(url);
         }
-      } catch (err) {
-        console.log("動画の共有をキャンセル:", err);
-      }
+        } catch (err) {
+      console.log("動画の共有をキャンセル:", err);
+    }
 
-      cameraRecorder = null;
+    if (cameraRecordStatus) {
+      cameraRecordStatus.textContent = "";
+      cameraRecordStatus.style.display = "none";
+    }
+
+    cameraRecorder = null;;
     };
 
     cameraRecorder.start();
     cameraRecording = true;
 
-    setMessage("録画中...");
-    console.log("通常録画開始:", mimeType);
+   setMessage("録画中...");
+
+if (cameraRecordStatus) {
+  cameraRecordStatus.textContent = "録画中...";
+  cameraRecordStatus.style.display = "block";
+}
+
+console.log("通常録画開始:", mimeType);
   } catch (err) {
     console.error("録画開始エラー:", err);
     cameraRecorder = null;
@@ -1005,6 +1020,10 @@ function pickCameraRecordingMimeType() {
   cameraRecording = false;
 
   setMessage("録画を処理しています...");
+    if (cameraRecordStatus) {
+  cameraRecordStatus.textContent = "録画を処理しています…";
+  cameraRecordStatus.style.display = "block";
+}
   console.log("通常録画停止");
 }
   
@@ -1077,7 +1096,21 @@ function pickCameraRecordingMimeType() {
   const shotSeekForwardBtn = document.getElementById("shotSeekForward");
   const shotSlowRatePresetsRow = document.getElementById("shotSlowRatePresets");
   const shotSlowWindowPresetsRow = document.getElementById("shotSlowWindowPresets");
+　const cameraRecordBtn = document.getElementById("cameraRecordBtn");
+  cameraRecordBtn.addEventListener("click", async () => {
+  if (cameraRecording) {
+    stopCameraRecording();
+    cameraRecordBtn.textContent = "録画開始";
+  } else {
+    await startCameraRecording();
 
+    if (cameraRecording) {
+      cameraRecordBtn.textContent = "録画停止";
+    }
+  }
+});　
+  //仮置き
+  const cameraRecordStatus = document.getElementById("cameraRecordStatus");
   // ---- STEP15: 保存済み射 x 保存済み射 「2画面比較」 ----
   const compareStartBtn = document.getElementById("compareStartBtn");
   const compareHintEl = document.getElementById("compareHint"); // STEP24
