@@ -591,6 +591,8 @@
   <button data-quality="highFps" class="wide">高FPS</button>
 </div>
 <p id="cameraQualityStatus" class="hint-note"></p>
+<p id="cameraQualityInfo" class="hint-note"></p>
+
       <button id="cameraRecordRetryBtn" class="wide" style="display:none">
   もう一度保存
 </button>
@@ -3451,17 +3453,40 @@ function setReviewSlowWindow(sec) {
         "⚠ " + 8 + "秒経っても応答がありません。許可ダイアログが表示されていないか確認してください。"
       );
     }, 8000);
+try {
+  const quality = CAMERA_QUALITY_OPTIONS[cameraQualityMode];
+  console.log("起動時の画質設定:", cameraQualityMode, quality);
+  
 
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({
-        audio: false,
-        video: {
-          facingMode: { ideal: facingMode },
-          width: { ideal: 1920 },
-          height: { ideal: 1080 },
-          frameRate: { ideal: 30 },
-        },
-      });
+  const videoConstraints = {
+    facingMode: { ideal: facingMode },
+    width: { ideal: quality.width },
+    height: { ideal: quality.height },
+    frameRate: { ideal: quality.frameRate },
+  };
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: videoConstraints,
+    });
+  } catch (error) {
+    // 高FPS設定で失敗したら30fpsで再試行
+    if (cameraQualityMode !== "highFps") {
+      throw error;
+    }
+
+    console.warn("60fpsで起動できないため、30fpsで再試行します。");
+
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: {
+        ...videoConstraints,
+        frameRate: { ideal: 30 },
+      },
+    });
+  }
+
     } catch (err) {
       clearTimeout(watchdog);
       console.error(err);
