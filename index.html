@@ -3782,10 +3782,14 @@ function stopCameraRecording() {
   function getBufferRetentionSec() {
     return computeBufferRetentionSec(delaySeconds, saveRangeSec);
   }
-  function captureFrame(now) {
-    if (now - lastCaptureTime < CAPTURE_INTERVAL_MS) return;
-    if (sourceVideo.readyState < 2) return;
-    lastCaptureTime = now;
+ function captureFrame(now) {
+  if (now - lastCaptureTime < CAPTURE_INTERVAL_MS) return;
+
+  // Bitmap生成が追いつかない場合は、新しいフレームをスキップする
+  if (pendingBitmapCount >= 2) return;
+
+  if (sourceVideo.readyState < 2) return;
+  lastCaptureTime = now;
 
     const myGeneration = cameraGeneration;
     drawRotatedFrame(bufferCtx, sourceVideo, currentRotation, bufferCanvas.width, bufferCanvas.height);
